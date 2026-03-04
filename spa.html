@@ -124,6 +124,7 @@
             const [products, setProducts] = useState([]);
             const [categories, setCategories] = useState([]);
             const [students, setStudents] = useState([]);
+            const [users, setUsers] = useState([]);
             const [isLoading, setIsLoading] = useState(true);
             const [currentUser, setCurrentUser] = useState(null);
             const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
@@ -141,6 +142,7 @@
                     setProducts(data.Products || []);
                     setCategories(data.Categories || []);
                     setStudents(data.Students || []);
+                    setUsers(data.Users || []);
                 }
                 setIsLoading(false);
             };
@@ -154,13 +156,14 @@
 
             const handleLogin = (e) => {
                 e.preventDefault();
-                // Simple login logic for SPA
-                if (loginId === 'admin' && password === 'password') {
-                    setCurrentUser({ loginId: 'admin', role: 'Admin' });
+                // Login logic using Users database from Google Sheets
+                const user = users.find(u => u.loginId === loginId && u.password === password);
+                if (user) {
+                    setCurrentUser(user);
                     setIsLoginModalOpen(false);
-                    setIsAdminMode(true);
+                    setIsAdminMode(user.role === 'Admin');
                 } else {
-                    alert('รหัสผ่านไม่ถูกต้อง (ใบ้: admin / password)');
+                    alert('ชื่อผู้ใช้หรือรหัสผ่านไม่ถูกต้อง');
                 }
             };
 
