@@ -451,8 +451,8 @@ export default function App() {
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-2 items-center gap-12">
-            <div className="h-[300px]">
-              <ResponsiveContainer width="100%" height="100%">
+            <div className="h-[300px] w-full">
+              <ResponsiveContainer width="100%" height="100%" minWidth={0}>
                 <PieChart>
                   <Pie
                     data={chartData}
