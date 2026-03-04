@@ -43,6 +43,7 @@ import {
   Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
+import { apiService } from './services/api';
 import { 
   PieChart,
   Pie,
@@ -94,6 +95,8 @@ export default function App() {
   const [isScanning, setIsScanning] = useState(false);
   const [checkSerialQuery, setCheckSerialQuery] = useState('');
   const [selectedProductForCheck, setSelectedProductForCheck] = useState<SheetProduct | null>(null);
+  const [personnelSearch, setPersonnelSearch] = useState('');
+  const [personnelFilter, setPersonnelFilter] = useState<'All' | 'NotBorrowed'>('All');
 
   // Real Data State
   const [products, setProducts] = useState<SheetProduct[]>([]);
@@ -149,7 +152,7 @@ export default function App() {
   }, []);
 
   // Handle Borrowing
-  const handleBorrow = (product: SheetProduct, fid: string, fname: string) => {
+  const handleBorrow = async (product: SheetProduct, fid: string, fname: string) => {
     if (!currentUser) return;
 
     const now = new Date();
@@ -169,7 +172,7 @@ export default function App() {
       borrowerId: `TX-${Date.now()}`,
       fid: fid,
       fname: fname,
-      snDevice: product.productId, // Assuming productId is the S/N for now
+      snDevice: product.productId,
       borrowDate,
       borrowTime,
       dueDate,
@@ -177,15 +180,55 @@ export default function App() {
       status: 'Active'
     };
 
-    setTransactions([...transactions, newTransaction]);
-    
-    // Update product status
-    setProducts(products.map(p => 
-      p.productId === product.productId ? { ...p, status: 'Borrowed' } : p
-    ));
+    try {
+      // Call API
+      const result = await apiService.borrowProduct(newTransaction);
+      
+      if (result && result.success) {
+        setTransactions([...transactions, { ...newTransaction, borrowerId: result.borrowerId || newTransaction.borrowerId }]);
+        
+        // Update product status locally
+        setProducts(products.map(p => 
+          p.productId === product.productId ? { ...p, status: 'Borrowed' } : p
+        ));
 
-    setIsBorrowModalOpen(false);
-    setSelectedProductForBorrow(null);
+        setIsBorrowModalOpen(false);
+        setSelectedProductForBorrow(null);
+        alert('บันทึกข้อมูลการยืมเรียบร้อยแล้ว');
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + (result?.error || 'ไม่สามารถบันทึกข้อมูลได้'));
+      }
+    } catch (error) {
+      console.error('Error borrowing:', error);
+      alert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    }
+  };
+
+  const handleReturn = async (snDevice: string) => {
+    if (!confirm('ยืนยันการคืนอุปกรณ์?')) return;
+    
+    try {
+      const result = await apiService.returnProduct(snDevice);
+      if (result && result.success) {
+        // Update local state
+        setTransactions(transactions.map(t => 
+          (t.snDevice === snDevice && t.status === 'Active') 
+            ? { ...t, status: 'Returned', returnDate: new Date().toLocaleDateString('th-TH') } 
+            : t
+        ));
+        
+        setProducts(products.map(p => 
+          p.productId === snDevice ? { ...p, status: 'Available' } : p
+        ));
+        
+        alert('คืนอุปกรณ์เรียบร้อยแล้ว');
+      } else {
+        alert('เกิดข้อผิดพลาด: ' + (result?.error || 'ไม่สามารถบันทึกข้อมูลได้'));
+      }
+    } catch (error) {
+      console.error('Error returning:', error);
+      alert('เกิดข้อผิดพลาดในการเชื่อมต่อเซิร์ฟเวอร์');
+    }
   };
 
   // Handle Import
@@ -239,16 +282,6 @@ export default function App() {
     setImportResults({ success: successCount, failed: failedCount, errors });
   };
 
-  // Get students who haven't borrowed
-  const getStudentsNotBorrowed = () => {
-    const activeBorrowerIds = new Set(
-      transactions
-        .filter(t => t.status === 'Active')
-        .map(t => t.fid)
-    );
-    return students.filter(s => !activeBorrowerIds.has(s.studentId));
-  };
-
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
@@ -295,8 +328,7 @@ export default function App() {
     { id: 'dashboard', label: 'Dashboard', icon: Home },
     { id: 'all-items', label: 'รายการทั้งหมด', icon: Tablet },
     { id: 'check-status', label: 'ตรวจสอบสถานะ', icon: CheckCircle2 },
-    { id: 'not-borrowed', label: 'นักเรียนที่ยังไม่ยืม', icon: UsersIcon },
-    { id: 'manage-personnel', label: 'จัดการบุคลากร', icon: UsersIcon },
+    { id: 'manage-personnel', label: 'ทะเบียนรายชื่อ', icon: UsersIcon },
     { id: 'repairs', label: 'แจ้งซ่อม', icon: AlertTriangle },
   ];
 
@@ -731,6 +763,24 @@ export default function App() {
                     })()}
                   </div>
                   
+                  {/* Return Button for Borrowed Items */}
+                  {(() => {
+                    const s = selectedProductForCheck.status?.toLowerCase() || '';
+                    const isBorrowed = s === 'borrowed' || s === 'borrow' || s === 'ถูกยืม';
+                    if (isBorrowed) {
+                      return (
+                        <button 
+                          onClick={() => handleReturn(selectedProductForCheck.productId)}
+                          className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-black hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 flex items-center justify-center space-x-2"
+                        >
+                          <ArrowRightLeft size={20} />
+                          <span>ทำรายการคืนอุปกรณ์</span>
+                        </button>
+                      );
+                    }
+                    return null;
+                  })()}
+                  
                   <div className="grid grid-cols-2 gap-6">
                     <div className="p-4 bg-white rounded-2xl shadow-sm border border-slate-100">
                       <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest mb-1">อุปกรณ์เสริม</p>
@@ -781,57 +831,114 @@ export default function App() {
     );
   };
 
-  const renderNotBorrowedStudents = () => {
-    const notBorrowed = getStudentsNotBorrowed();
+  const renderAdminManagePersonnel = () => {
+    const activeBorrowerIds = new Set(
+      transactions
+        .filter(t => t.status === 'Active')
+        .map(t => t.fid)
+    );
+
+    const filteredPersonnel = students.filter(student => {
+      const matchesSearch = 
+        student.fullName.toLowerCase().includes(personnelSearch.toLowerCase()) ||
+        student.email.toLowerCase().includes(personnelSearch.toLowerCase()) ||
+        student.studentId.includes(personnelSearch);
+      
+      const isNotBorrowed = !activeBorrowerIds.has(student.studentId);
+      const matchesFilter = personnelFilter === 'All' || (personnelFilter === 'NotBorrowed' && isNotBorrowed);
+
+      return matchesSearch && matchesFilter;
+    });
+
     return (
       <div className="space-y-8">
-        <div className="flex items-center justify-between">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
           <div>
-            <h2 className="text-3xl font-black text-slate-800 tracking-tight">นักเรียนที่ยังไม่ยืมอุปกรณ์</h2>
-            <p className="text-slate-500">รายชื่อนักเรียนที่ยังไม่มีรายการยืม iPad ในระบบ</p>
+            <h2 className="text-3xl font-black text-slate-800 tracking-tight">ทะเบียนรายชื่อ</h2>
+            <p className="text-slate-500">จัดการข้อมูลนักเรียนและบุคลากรในระบบ</p>
           </div>
-          <div className="bg-white px-6 py-3 rounded-2xl border border-slate-100 shadow-sm">
-            <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">จำนวนทั้งหมด</p>
-            <p className="text-xl font-black text-blue-600">{notBorrowed.length} คน</p>
-          </div>
+          <button className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black flex items-center space-x-2 hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/20 active:scale-95">
+            <UserPlus size={20} />
+            <span>เพิ่มบุคคลากร</span>
+          </button>
         </div>
 
-        <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
+        <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
+          <div className="p-8 border-b border-slate-50 flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="relative flex-1 max-w-md">
+              <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+              <input 
+                type="text" 
+                placeholder="ค้นหาชื่อ, อีเมล หรือรหัส..." 
+                value={personnelSearch}
+                onChange={(e) => setPersonnelSearch(e.target.value)}
+                className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" 
+              />
+            </div>
+            <div className="flex items-center space-x-2">
+              <span className="text-xs font-black text-slate-400 uppercase tracking-widest">ตัวกรอง:</span>
+              <select 
+                value={personnelFilter}
+                onChange={(e) => setPersonnelFilter(e.target.value as 'All' | 'NotBorrowed')}
+                className="px-4 py-2 bg-slate-50 border border-slate-100 rounded-xl text-sm font-bold focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all"
+              >
+                <option value="All">ทั้งหมด</option>
+                <option value="NotBorrowed">นักเรียนที่ยังไม่ยืม</option>
+              </select>
+            </div>
+          </div>
           <div className="overflow-x-auto">
             <table className="w-full text-left border-collapse">
               <thead>
                 <tr className="bg-slate-50/50">
-                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">รหัสนักเรียน</th>
                   <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">ชื่อ-นามสกุล</th>
-                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">ระดับชั้น</th>
-                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">ห้อง</th>
-                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">การดำเนินการ</th>
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">อีเมล</th>
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">บทบาท</th>
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400 text-right">จัดการ</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-50">
-                {notBorrowed.map((student) => (
-                  <tr key={student.studentId} className="hover:bg-slate-50/50 transition-colors group">
+                {filteredPersonnel.map((student) => (
+                  <tr key={student.studentId} className="hover:bg-slate-50/50 transition-colors">
                     <td className="px-8 py-6">
-                      <span className="text-sm font-mono font-bold text-slate-400">{student.studentId}</span>
+                      <div className="flex items-center space-x-3">
+                        <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center text-blue-600 font-black">
+                          {student.fullName[0]}
+                        </div>
+                        <div>
+                          <p className="font-bold text-slate-800">{student.fullName}</p>
+                          <p className="text-[10px] font-mono text-slate-400">{student.studentId}</p>
+                        </div>
+                      </div>
                     </td>
+                    <td className="px-8 py-6 text-slate-500 text-sm">{student.email}</td>
                     <td className="px-8 py-6">
-                      <p className="text-sm font-black text-slate-800">{student.fullName}</p>
-                    </td>
-                    <td className="px-8 py-6">
-                      <span className="px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase">
-                        {student.grade}
+                      <span className="text-[10px] font-black uppercase tracking-widest bg-slate-100 text-slate-500 px-3 py-1 rounded-full">
+                        นักเรียน
                       </span>
                     </td>
-                    <td className="px-8 py-6">
-                      <span className="text-sm font-bold text-slate-600">{student.classroom}</span>
-                    </td>
-                    <td className="px-8 py-6">
-                      <button className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all active:scale-95">
-                        ส่งคำเชิญ
-                      </button>
+                    <td className="px-8 py-6 text-right">
+                      <div className="flex items-center justify-end space-x-2">
+                        <button 
+                          className="p-2 transition-colors text-slate-400 hover:text-blue-600"
+                          title="แก้ไขข้อมูลนักเรียน"
+                        >
+                          <Edit3 size={18} />
+                        </button>
+                        <button className="p-2 text-slate-400 hover:text-rose-600 transition-colors">
+                          <Trash2 size={18} />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
+                {filteredPersonnel.length === 0 && (
+                  <tr>
+                    <td colSpan={4} className="px-8 py-20 text-center text-slate-400 italic">
+                      ไม่พบข้อมูลที่ค้นหา
+                    </td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -839,75 +946,6 @@ export default function App() {
       </div>
     );
   };
-
-  const renderAdminManagePersonnel = () => (
-    <div className="space-y-8">
-      <div className="flex flex-col md:flex-row md:items-center justify-between gap-6">
-        <div>
-          <h2 className="text-3xl font-black text-slate-800 tracking-tight">จัดการบุคลากร</h2>
-          <p className="text-slate-500">จัดการข้อมูลนักเรียนและบุคลากรในระบบ</p>
-        </div>
-        <button className="bg-slate-900 text-white px-8 py-4 rounded-2xl font-black flex items-center space-x-2 hover:bg-slate-800 transition-all shadow-lg shadow-slate-900/20 active:scale-95">
-          <UserPlus size={20} />
-          <span>เพิ่มบุคคลากร</span>
-        </button>
-      </div>
-
-      <div className="bg-white rounded-[2.5rem] shadow-sm border border-slate-100 overflow-hidden">
-        <div className="p-8 border-b border-slate-50 flex items-center justify-between">
-          <div className="relative flex-1 max-w-md">
-            <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-            <input type="text" placeholder="ค้นหาชื่อ หรือ อีเมล..." className="w-full pl-12 pr-4 py-3 bg-slate-50 border border-slate-100 rounded-xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" />
-          </div>
-        </div>
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse">
-            <thead>
-              <tr className="bg-slate-50/50">
-                <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">ชื่อ-นามสกุล</th>
-                <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">อีเมล</th>
-                <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">บทบาท</th>
-                <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400 text-right">จัดการ</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-50">
-              {students.map((student) => (
-                <tr key={student.studentId} className="hover:bg-slate-50/50 transition-colors">
-                  <td className="px-8 py-6">
-                    <div className="flex items-center space-x-3">
-                      <div className="w-10 h-10 rounded-xl bg-blue-100 flex items-center justify-center text-blue-600 font-black">
-                        {student.fullName[0]}
-                      </div>
-                      <span className="font-bold text-slate-800">{student.fullName}</span>
-                    </div>
-                  </td>
-                  <td className="px-8 py-6 text-slate-500 text-sm">{student.email}</td>
-                  <td className="px-8 py-6">
-                    <span className="text-[10px] font-black uppercase tracking-widest bg-slate-100 text-slate-500 px-3 py-1 rounded-full">
-                      นักเรียน
-                    </span>
-                  </td>
-                  <td className="px-8 py-6 text-right">
-                    <div className="flex items-center justify-end space-x-2">
-                      <button 
-                        className="p-2 transition-colors text-slate-400 hover:text-blue-600"
-                        title="แก้ไขข้อมูลนักเรียน"
-                      >
-                        <Edit3 size={18} />
-                      </button>
-                      <button className="p-2 text-slate-400 hover:text-rose-600 transition-colors">
-                        <Trash2 size={18} />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      </div>
-    </div>
-  );
 
   const handleGenerateRepairPDF = async () => {
     if (!repairSlipRef.current) return;
@@ -2127,7 +2165,6 @@ export default function App() {
                 adminTab === 'dashboard' ? renderDashboard() :
                 adminTab === 'all-items' ? renderAdminAllItems() :
                 adminTab === 'check-status' ? renderAdminCheckStatus() :
-                adminTab === 'not-borrowed' ? renderNotBorrowedStudents() :
                 adminTab === 'manage-personnel' ? renderAdminManagePersonnel() :
                 adminTab === 'repairs' ? renderAdminRepairs() :
                 <div className="text-center py-20">

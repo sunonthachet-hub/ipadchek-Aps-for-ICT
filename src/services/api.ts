@@ -3,6 +3,8 @@
  * Connects to Google Apps Script Web App
  */
 
+import { SheetTransaction } from '../types';
+
 const API_URL = (import.meta as any).env.VITE_API_URL;
 
 export const apiService = {
@@ -18,27 +20,25 @@ export const apiService = {
     return response.json();
   },
 
-  async borrowProduct(productId: string, userId: string, dueDate: string) {
+  async borrowProduct(transaction: SheetTransaction) {
     if (!API_URL) return null;
     const response = await fetch(API_URL, {
       method: 'POST',
       body: JSON.stringify({
         action: 'borrow',
-        productId,
-        userId,
-        dueDate
+        ...transaction
       })
     });
     return response.json();
   },
 
-  async returnProduct(productId: string) {
+  async returnProduct(snDevice: string) {
     if (!API_URL) return null;
     const response = await fetch(API_URL, {
       method: 'POST',
       body: JSON.stringify({
         action: 'return',
-        productId
+        snDevice
       })
     });
     return response.json();

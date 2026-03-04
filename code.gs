@@ -97,22 +97,25 @@ function handleBorrow(ss, data) {
   const prodSheet = ss.getSheetByName('Products');
   
   // 1. Add Transaction
-  const id = 'T' + new Date().getTime();
+  // data should contain: fid, fname, snDevice, borrowDate, borrowTime, dueDate, recorder
+  const borrowerId = 'TX-' + new Date().getTime();
   transSheet.appendRow([
-    id, 
-    data.productId, 
-    data.borrowerId, 
-    data.borrowerType, 
-    new Date().toISOString(), 
+    borrowerId, 
+    data.fid, 
+    data.fname, 
+    data.snDevice, 
+    data.borrowDate, 
+    data.borrowTime, 
     data.dueDate, 
-    '', 
+    '', // returnDate
+    data.recorder, 
     'Active'
   ]);
   
   // 2. Update Product Status
-  updateStatus(prodSheet, 'productId', data.productId, 'Borrowed');
+  updateStatus(prodSheet, 'productId', data.snDevice, 'Borrowed');
   
-  return { success: true, transactionId: id };
+  return { success: true, borrowerId: borrowerId };
 }
 
 function handleReturn(ss, data) {
@@ -121,16 +124,21 @@ function handleReturn(ss, data) {
   
   // 1. Update Transaction
   const transData = transSheet.getDataRange().getValues();
+  const headers = transData[0];
+  const snCol = headers.indexOf('snDevice');
+  const statusCol = headers.indexOf('status');
+  const returnDateCol = headers.indexOf('returnDate');
+  
   for (let i = 1; i < transData.length; i++) {
-    if (transData[i][1] === data.productId && transData[i][7] === 'Active') {
-      transSheet.getRange(i + 1, 7).setValue(new Date().toISOString());
-      transSheet.getRange(i + 1, 8).setValue('Returned');
+    if (transData[i][snCol] === data.snDevice && transData[i][statusCol] === 'Active') {
+      transSheet.getRange(i + 1, returnDateCol + 1).setValue(new Date().toLocaleDateString('th-TH'));
+      transSheet.getRange(i + 1, statusCol + 1).setValue('Returned');
       break;
     }
   }
   
   // 2. Update Product Status
-  updateStatus(prodSheet, 'productId', data.productId, 'Available');
+  updateStatus(prodSheet, 'productId', data.snDevice, 'Available');
   
   return { success: true };
 }
