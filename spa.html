@@ -1,0 +1,387 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ICT Inventory System - iPad Search Service</title>
+    
+    <!-- CDNs -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+    <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+    <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/lucide-react@latest"></script>
+    
+    <!-- Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Anuphan:wght@100..700&display=swap" rel="stylesheet">
+
+    <style>
+        body {
+            font-family: 'Anuphan', sans-serif;
+            background-color: #f8fafc;
+        }
+        .glass-morphism {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 6px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background: #f1f1f1;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background: #cbd5e1;
+            border-radius: 10px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+            background: #94a3b8;
+        }
+    </style>
+</head>
+<body>
+    <div id="root"></div>
+
+    <script type="text/babel">
+        const { useState, useEffect, useMemo } = React;
+        const { 
+            Home, Tablet, Search, User, Users, Settings, LogOut, 
+            Plus, CheckCircle2, Clock, AlertCircle, ChevronRight, 
+            X, Menu, Database, History, Filter, Info, QrCode, ArrowRightLeft
+        } = LucideReact;
+
+        // --- CONFIGURATION ---
+        // ใส่ URL ของ Google Apps Script Web App ที่นี่
+        const CONFIG = {
+            API_URL: 'https://script.google.com/macros/s/AKfycbzt7QcZm6at7rQntVyiawOZdP4MphhYU8CnP4lJwZFFqSZaztZRkOX3yPwayUKBFXQI/exec', // เปลี่ยนเป็น URL ของคุณ
+            APP_NAME: 'ICT Inventory System',
+            SCHOOL_NAME: 'โรงเรียนของคุณ'
+        };
+
+        // --- MOCK DATA (ใช้เมื่อไม่ได้เชื่อมต่อ API) ---
+        const MOCK_DATA = {
+            Products: [
+                { productId: 'IPAD-001', snDevice: 'DLX12345', status: 'Available', categoryId: 'CAT1', model: 'iPad Gen 9', storage: '64GB' },
+                { productId: 'IPAD-002', snDevice: 'DLX67890', status: 'Borrowed', categoryId: 'CAT1', model: 'iPad Gen 9', storage: '64GB' },
+                { productId: 'IPAD-003', snDevice: 'DLX11223', status: 'Maintenance', categoryId: 'CAT1', model: 'iPad Gen 9', storage: '64GB' },
+            ],
+            Categories: [
+                { categoryId: 'CAT1', name: 'iPad Gen 9', icon: 'tablet' }
+            ],
+            Students: [
+                { studentId: '65001', name: 'นายสมชาย ใจดี', grade: 'ม.4', room: '1' },
+                { studentId: '65002', name: 'นางสาวสมศรี มีสุข', grade: 'ม.4', room: '2' }
+            ],
+            Users: [
+                { id: 'U001', loginId: 'admin', password: 'password', role: 'Admin' }
+            ]
+        };
+
+        // --- API SERVICE ---
+        const apiService = {
+            async getAllData() {
+                if (!CONFIG.API_URL || CONFIG.API_URL.includes('XXXXXXXXXXXX')) {
+                    console.warn('API URL not configured. Using mock data.');
+                    return MOCK_DATA;
+                }
+                try {
+                    const url = `${CONFIG.API_URL}?action=getAllData`;
+                    const response = await fetch(url);
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error fetching data:', error);
+                    return MOCK_DATA;
+                }
+            },
+            async postAction(action, data) {
+                if (!CONFIG.API_URL || CONFIG.API_URL.includes('XXXXXXXXXXXX')) {
+                    alert('API URL not configured. Action simulated.');
+                    return { status: 'success' };
+                }
+                try {
+                    const response = await fetch(CONFIG.API_URL, {
+                        method: 'POST',
+                        body: JSON.stringify({ action, ...data })
+                    });
+                    return await response.json();
+                } catch (error) {
+                    console.error('Error posting action:', error);
+                    return { status: 'error', message: error.message };
+                }
+            }
+        };
+
+        // --- COMPONENTS ---
+
+        function App() {
+            const [activeTab, setActiveTab] = useState('home');
+            const [isAdminMode, setIsAdminMode] = useState(false);
+            const [searchQuery, setSearchQuery] = useState('');
+            const [products, setProducts] = useState([]);
+            const [categories, setCategories] = useState([]);
+            const [students, setStudents] = useState([]);
+            const [isLoading, setIsLoading] = useState(true);
+            const [currentUser, setCurrentUser] = useState(null);
+            const [isLoginModalOpen, setIsLoginModalOpen] = useState(false);
+            const [loginId, setLoginId] = useState('');
+            const [password, setPassword] = useState('');
+
+            useEffect(() => {
+                loadData();
+            }, []);
+
+            const loadData = async () => {
+                setIsLoading(true);
+                const data = await apiService.getAllData();
+                if (data) {
+                    setProducts(data.Products || []);
+                    setCategories(data.Categories || []);
+                    setStudents(data.Students || []);
+                }
+                setIsLoading(false);
+            };
+
+            const filteredProducts = useMemo(() => {
+                return products.filter(p => 
+                    p.productId.toLowerCase().includes(searchQuery.toLowerCase()) ||
+                    p.snDevice.toLowerCase().includes(searchQuery.toLowerCase())
+                );
+            }, [products, searchQuery]);
+
+            const handleLogin = (e) => {
+                e.preventDefault();
+                // Simple login logic for SPA
+                if (loginId === 'admin' && password === 'password') {
+                    setCurrentUser({ loginId: 'admin', role: 'Admin' });
+                    setIsLoginModalOpen(false);
+                    setIsAdminMode(true);
+                } else {
+                    alert('รหัสผ่านไม่ถูกต้อง (ใบ้: admin / password)');
+                }
+            };
+
+            const stats = useMemo(() => {
+                return {
+                    total: products.length,
+                    available: products.filter(p => p.status === 'Available').length,
+                    borrowed: products.filter(p => p.status === 'Borrowed').length,
+                    maintenance: products.filter(p => p.status === 'Maintenance').length,
+                };
+            }, [products]);
+
+            if (isLoading) {
+                return (
+                    <div className="h-screen flex items-center justify-center bg-slate-50">
+                        <div className="text-center">
+                            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-600 mx-auto mb-4"></div>
+                            <p className="text-slate-500">กำลังโหลดข้อมูล...</p>
+                        </div>
+                    </div>
+                );
+            }
+
+            return (
+                <div className="min-h-screen flex flex-col">
+                    {/* Header */}
+                    <header className="bg-white border-b sticky top-0 z-40">
+                        <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <div className="bg-blue-600 p-2 rounded-xl">
+                                    <Tablet className="text-white w-6 h-6" />
+                                </div>
+                                <div>
+                                    <h1 className="font-bold text-slate-900 leading-none">{CONFIG.APP_NAME}</h1>
+                                    <p className="text-xs text-slate-500 mt-1">{CONFIG.SCHOOL_NAME}</p>
+                                </div>
+                            </div>
+
+                            <div className="flex items-center gap-4">
+                                {currentUser ? (
+                                    <div className="flex items-center gap-3">
+                                        <div className="text-right hidden sm:block">
+                                            <p className="text-sm font-medium text-slate-900">{currentUser.loginId}</p>
+                                            <p className="text-xs text-blue-600 font-semibold uppercase">{currentUser.role}</p>
+                                        </div>
+                                        <button 
+                                            onClick={() => { setCurrentUser(null); setIsAdminMode(false); }}
+                                            className="p-2 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition-colors"
+                                        >
+                                            <LogOut className="w-5 h-5" />
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <button 
+                                        onClick={() => setIsLoginModalOpen(true)}
+                                        className="bg-blue-600 text-white px-4 py-2 rounded-xl text-sm font-semibold hover:bg-blue-700 transition-all flex items-center gap-2"
+                                    >
+                                        <User className="w-4 h-4" />
+                                        เข้าสู่ระบบ
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+                    </header>
+
+                    {/* Main Content */}
+                    <main className="flex-1 max-w-7xl mx-auto w-full p-4 md:p-6">
+                        
+                        {/* Search Section */}
+                        <div className="mb-8">
+                            <div className="relative max-w-2xl mx-auto">
+                                <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400 w-5 h-5" />
+                                <input 
+                                    type="text" 
+                                    placeholder="ค้นหาด้วยรหัสทรัพย์สิน หรือ Serial Number..."
+                                    className="w-full pl-12 pr-4 py-4 bg-white border-0 ring-1 ring-slate-200 rounded-2xl focus:ring-2 focus:ring-blue-500 shadow-sm outline-none transition-all text-lg"
+                                    value={searchQuery}
+                                    onChange={(e) => setSearchQuery(e.target.value)}
+                                />
+                            </div>
+                        </div>
+
+                        {/* Stats Grid (Admin Only or Dashboard) */}
+                        {isAdminMode && (
+                            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                                <StatCard icon={<Database />} label="ทั้งหมด" value={stats.total} color="blue" />
+                                <StatCard icon={<CheckCircle2 />} label="พร้อมใช้งาน" value={stats.available} color="emerald" />
+                                <StatCard icon={<ArrowRightLeft />} label="ถูกยืม" value={stats.borrowed} color="amber" />
+                                <StatCard icon={<AlertCircle />} label="ส่งซ่อม" value={stats.maintenance} color="rose" />
+                            </div>
+                        )}
+
+                        {/* Product Grid */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                            {filteredProducts.map(product => (
+                                <ProductCard key={product.productId} product={product} />
+                            ))}
+                        </div>
+
+                        {filteredProducts.length === 0 && (
+                            <div className="text-center py-20">
+                                <div className="bg-slate-100 w-20 h-20 rounded-full flex items-center justify-center mx-auto mb-4">
+                                    <Search className="text-slate-400 w-10 h-10" />
+                                </div>
+                                <h3 className="text-slate-900 font-bold text-xl">ไม่พบข้อมูล</h3>
+                                <p className="text-slate-500">ลองค้นหาด้วยคำอื่น หรือตรวจสอบความถูกต้องของรหัส</p>
+                            </div>
+                        )}
+                    </main>
+
+                    {/* Login Modal */}
+                    {isLoginModalOpen && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/50 backdrop-blur-sm">
+                            <div className="bg-white rounded-3xl w-full max-w-md p-8 shadow-2xl">
+                                <div className="flex justify-between items-center mb-6">
+                                    <h2 className="text-2xl font-bold text-slate-900">เข้าสู่ระบบ</h2>
+                                    <button onClick={() => setIsLoginModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-full">
+                                        <X className="w-6 h-6 text-slate-400" />
+                                    </button>
+                                </div>
+                                <form onSubmit={handleLogin} className="space-y-4">
+                                    <div>
+                                        <label className="block text-sm font-semibold text-slate-700 mb-1">ชื่อผู้ใช้</label>
+                                        <input 
+                                            type="text" 
+                                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                                            value={loginId}
+                                            onChange={(e) => setLoginId(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <div>
+                                        <label className="block text-sm font-semibold text-slate-700 mb-1">รหัสผ่าน</label>
+                                        <input 
+                                            type="password" 
+                                            className="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none"
+                                            value={password}
+                                            onChange={(e) => setPassword(e.target.value)}
+                                            required
+                                        />
+                                    </div>
+                                    <button type="submit" className="w-full bg-blue-600 text-white py-4 rounded-xl font-bold hover:bg-blue-700 transition-all shadow-lg shadow-blue-200">
+                                        เข้าสู่ระบบ
+                                    </button>
+                                </form>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Footer */}
+                    <footer className="bg-white border-t py-8 px-4 mt-auto">
+                        <div className="max-w-7xl mx-auto text-center">
+                            <p className="text-slate-500 text-sm">© 2024 {CONFIG.SCHOOL_NAME} - พัฒนาโดย ICT Team</p>
+                        </div>
+                    </footer>
+                </div>
+            );
+        }
+
+        function StatCard({ icon, label, value, color }) {
+            const colors = {
+                blue: 'bg-blue-50 text-blue-600',
+                emerald: 'bg-emerald-50 text-emerald-600',
+                amber: 'bg-amber-50 text-amber-600',
+                rose: 'bg-rose-50 text-rose-600',
+            };
+            return (
+                <div className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+                    <div className={`w-10 h-10 rounded-xl flex items-center justify-center mb-3 ${colors[color]}`}>
+                        {React.cloneElement(icon, { className: 'w-5 h-5' })}
+                    </div>
+                    <p className="text-slate-500 text-xs font-semibold uppercase tracking-wider">{label}</p>
+                    <p className="text-2xl font-bold text-slate-900 mt-1">{value}</p>
+                </div>
+            );
+        }
+
+        function ProductCard({ product }) {
+            const statusConfig = {
+                Available: { label: 'พร้อมใช้งาน', color: 'bg-emerald-100 text-emerald-700', icon: <CheckCircle2 className="w-3 h-3" /> },
+                Borrowed: { label: 'ถูกยืม', color: 'bg-amber-100 text-amber-700', icon: <Clock className="w-3 h-3" /> },
+                Maintenance: { label: 'ส่งซ่อม', color: 'bg-rose-100 text-rose-700', icon: <AlertCircle className="w-3 h-3" /> },
+            };
+            const config = statusConfig[product.status] || statusConfig.Available;
+
+            return (
+                <div className="bg-white rounded-3xl border border-slate-100 p-5 shadow-sm hover:shadow-md transition-all group">
+                    <div className="flex justify-between items-start mb-4">
+                        <div className="bg-slate-50 p-3 rounded-2xl group-hover:bg-blue-50 transition-colors">
+                            <Tablet className="w-8 h-8 text-slate-400 group-hover:text-blue-500 transition-colors" />
+                        </div>
+                        <span className={`px-3 py-1 rounded-full text-[10px] font-bold uppercase flex items-center gap-1.5 ${config.color}`}>
+                            {config.icon}
+                            {config.label}
+                        </span>
+                    </div>
+                    
+                    <h3 className="text-slate-900 font-bold text-lg leading-tight mb-1">{product.productId}</h3>
+                    <p className="text-slate-400 text-xs font-medium mb-4">S/N: {product.snDevice}</p>
+                    
+                    <div className="space-y-2 mb-6">
+                        <div className="flex justify-between text-xs">
+                            <span className="text-slate-400">รุ่น</span>
+                            <span className="text-slate-700 font-semibold">{product.model || 'iPad Gen 9'}</span>
+                        </div>
+                        <div className="flex justify-between text-xs">
+                            <span className="text-slate-400">ความจุ</span>
+                            <span className="text-slate-700 font-semibold">{product.storage || '64GB'}</span>
+                        </div>
+                    </div>
+
+                    <button className="w-full py-3 rounded-xl bg-slate-50 text-slate-600 text-sm font-bold hover:bg-blue-600 hover:text-white transition-all flex items-center justify-center gap-2">
+                        <Info className="w-4 h-4" />
+                        ดูรายละเอียด
+                    </button>
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
