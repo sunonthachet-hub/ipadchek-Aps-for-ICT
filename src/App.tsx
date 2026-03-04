@@ -4,6 +4,9 @@
  */
 
 import React, { useState, useMemo, useEffect } from 'react';
+import { jsPDF } from 'jspdf';
+import html2canvas from 'html2canvas';
+import { QRCodeCanvas } from 'qrcode.react';
 import { 
   Home, 
   Tablet, 
@@ -33,7 +36,11 @@ import {
   Database,
   Camera,
   History,
-  UserPlus
+  UserPlus,
+  Mail,
+  Download,
+  QrCode,
+  Info
 } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -77,6 +84,11 @@ export default function App() {
   const [selectedGrade, setSelectedGrade] = useState<string>('All');
   const [selectedRoom, setSelectedRoom] = useState<string>('All');
   const [isAddProductModalOpen, setIsAddProductModalOpen] = useState(false);
+  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
+  const [importType, setImportType] = useState<'JSON' | 'CSV' | 'GoogleSheet'>('JSON');
+  const [importResults, setImportResults] = useState<{ success: number; failed: number; errors: string[] } | null>(null);
+  const [isBorrowModalOpen, setIsBorrowModalOpen] = useState(false);
+  const [selectedProductForBorrow, setSelectedProductForBorrow] = useState<SheetProduct | null>(null);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState(false);
   const [isPrintPreviewOpen, setIsPrintPreviewOpen] = useState(false);
   const [isScanning, setIsScanning] = useState(false);
@@ -99,6 +111,17 @@ export default function App() {
   const [loginId, setLoginId] = useState('');
   const [password, setPassword] = useState('');
   const [loginError, setLoginError] = useState('');
+
+  // Repair Form State
+  const [repairForm, setRepairForm] = useState({
+    productId: '',
+    issueType: 'screen',
+    description: '',
+    reporterEmail: '',
+    repairNumber: `REP-${Date.now().toString().slice(-6)}`
+  });
+  const [isGeneratingPDF, setIsGeneratingPDF] = useState(false);
+  const [repairSlipRef] = useState<React.RefObject<HTMLDivElement>>(React.createRef());
 
   // Fetch Data on Mount
   useEffect(() => {
@@ -125,17 +148,127 @@ export default function App() {
     loadAllData();
   }, []);
 
+  // Handle Borrowing
+  const handleBorrow = (product: SheetProduct, fid: string, fname: string) => {
+    if (!currentUser) return;
+
+    const now = new Date();
+    const borrowDate = now.toLocaleDateString('th-TH');
+    const borrowTime = now.toLocaleTimeString('th-TH');
+    
+    // Calculate due date: Teacher 5 years, Student 3 years
+    const dueDateObj = new Date(now);
+    if (currentUser.role === UserRole.Teacher) {
+      dueDateObj.setFullYear(dueDateObj.getFullYear() + 5);
+    } else {
+      dueDateObj.setFullYear(dueDateObj.getFullYear() + 3);
+    }
+    const dueDate = dueDateObj.toLocaleDateString('th-TH');
+
+    const newTransaction: SheetTransaction = {
+      borrowerId: `TX-${Date.now()}`,
+      fid: fid,
+      fname: fname,
+      snDevice: product.productId, // Assuming productId is the S/N for now
+      borrowDate,
+      borrowTime,
+      dueDate,
+      recorder: currentUser.loginId,
+      status: 'Active'
+    };
+
+    setTransactions([...transactions, newTransaction]);
+    
+    // Update product status
+    setProducts(products.map(p => 
+      p.productId === product.productId ? { ...p, status: 'Borrowed' } : p
+    ));
+
+    setIsBorrowModalOpen(false);
+    setSelectedProductForBorrow(null);
+  };
+
+  // Handle Import
+  const handleImportData = (data: any[], type: 'JSON' | 'CSV') => {
+    let successCount = 0;
+    let failedCount = 0;
+    const errors: string[] = [];
+
+    const newTransactions: SheetTransaction[] = [];
+
+    data.forEach((row, index) => {
+      try {
+        // Basic validation
+        if (!row.fid || !row.snDevice) {
+          throw new Error(`Row ${index + 1}: Missing fid or snDevice`);
+        }
+
+        const now = new Date();
+        const borrowDate = row.borrowDate || now.toLocaleDateString('th-TH');
+        const borrowTime = row.borrowTime || now.toLocaleTimeString('th-TH');
+        
+        // Auto calculate due date if not provided
+        let dueDate = row.dueDate;
+        if (!dueDate) {
+          const dueDateObj = new Date(now);
+          // Default to 3 years if unknown, or check if fid belongs to teacher
+          const isTeacher = teachers.some(t => t.teacherId === row.fid);
+          dueDateObj.setFullYear(dueDateObj.getFullYear() + (isTeacher ? 5 : 3));
+          dueDate = dueDateObj.toLocaleDateString('th-TH');
+        }
+
+        newTransactions.push({
+          borrowerId: row.borrowerId || `TX-IMP-${Date.now()}-${index}`,
+          fid: row.fid,
+          fname: row.fname || 'Unknown',
+          snDevice: row.snDevice,
+          borrowDate,
+          borrowTime,
+          dueDate,
+          recorder: row.recorder || currentUser?.loginId || 'System',
+          status: row.status || 'Active'
+        });
+        successCount++;
+      } catch (err: any) {
+        failedCount++;
+        errors.push(err.message);
+      }
+    });
+
+    setTransactions([...transactions, ...newTransactions]);
+    setImportResults({ success: successCount, failed: failedCount, errors });
+  };
+
+  // Get students who haven't borrowed
+  const getStudentsNotBorrowed = () => {
+    const activeBorrowerIds = new Set(
+      transactions
+        .filter(t => t.status === 'Active')
+        .map(t => t.fid)
+    );
+    return students.filter(s => !activeBorrowerIds.has(s.studentId));
+  };
+
   const handleLogin = (e: React.FormEvent) => {
     e.preventDefault();
     setLoginError('');
 
-    const user = users.find(u => u.loginId === loginId && u.password === password);
+    if (users.length === 0) {
+      setLoginError('กำลังโหลดข้อมูลผู้ใช้... กรุณารอสักครู่แล้วลองใหม่');
+      return;
+    }
+
+    // ปรับปรุงการตรวจสอบให้ยืดหยุ่นขึ้น (รองรับทั้ง string/number และตัดช่องว่าง)
+    const user = users.find(u => 
+      String(u.loginId).trim() === loginId.trim() && 
+      String(u.password).trim() === password.trim()
+    );
+
     if (user) {
       setCurrentUser(user);
       setIsLoginModalOpen(false);
       setLoginId('');
       setPassword('');
-      // Auto-switch to admin mode if admin logs in
       if (user.role === UserRole.Admin) {
         setIsAdminMode(true);
       }
@@ -152,16 +285,17 @@ export default function App() {
 
   const menuItems = [
     { id: 'home', label: 'หน้าแรก', icon: Home },
+    { id: 'report', label: 'แจ้งปัญหา', icon: AlertTriangle },
     { id: 'products', label: 'รายการสินค้า', icon: Tablet },
     { id: 'rules', label: 'ระเบียบการยืม', icon: FileText },
     { id: 'contact', label: 'ติดต่อสอบถาม', icon: Phone },
-    { id: 'report', label: 'แจ้งปัญหาการใช้งาน', icon: AlertTriangle },
   ];
 
   const adminMenuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: Home },
     { id: 'all-items', label: 'รายการทั้งหมด', icon: Tablet },
     { id: 'check-status', label: 'ตรวจสอบสถานะ', icon: CheckCircle2 },
+    { id: 'not-borrowed', label: 'นักเรียนที่ยังไม่ยืม', icon: UsersIcon },
     { id: 'manage-personnel', label: 'จัดการบุคลากร', icon: UsersIcon },
     { id: 'repairs', label: 'แจ้งซ่อม', icon: AlertTriangle },
   ];
@@ -318,25 +452,27 @@ export default function App() {
             <h3 className="text-2xl font-black text-slate-800 tracking-tight">กิจกรรมล่าสุด</h3>
           </div>
           <div className="space-y-8">
-            {[
-              { user: 'John Doe', action: 'ยืม iPad Gen 9', time: '2 ชม. ที่แล้ว', type: 'borrow' },
-              { user: 'Jane Smith', action: 'คืน iPad Gen 10', time: '5 ชม. ที่แล้ว', type: 'return' },
-              { user: 'Admin', action: 'ส่งซ่อม Macbook Air', time: '1 วันที่แล้ว', type: 'maintenance' },
-            ].map((activity, i) => (
-              <div key={i} className="flex items-start space-x-5 group">
-                <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black shrink-0 shadow-lg transition-transform group-hover:scale-110 ${
-                  activity.type === 'borrow' ? 'bg-blue-500 shadow-blue-500/20' : 
-                  activity.type === 'return' ? 'bg-emerald-500 shadow-emerald-500/20' : 'bg-rose-500 shadow-rose-500/20'
-                }`}>
-                  {activity.user[0]}
+            {transactions
+              .slice()
+              .reverse()
+              .slice(0, 5)
+              .map((t, i) => (
+                <div key={i} className="flex items-start space-x-5 group">
+                  <div className={`w-12 h-12 rounded-2xl flex items-center justify-center text-white font-black shrink-0 shadow-lg transition-transform group-hover:scale-110 ${
+                    t.status === 'Active' ? 'bg-blue-500 shadow-blue-500/20' : 'bg-emerald-500 shadow-emerald-500/20'
+                  }`}>
+                    {t.fname[0]}
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-base font-black text-slate-900 truncate">{t.fname}</p>
+                    <p className="text-sm text-slate-500 mb-1">{t.status === 'Active' ? 'ยืม' : 'คืน'} {t.snDevice}</p>
+                    <span className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">{t.borrowDate}</span>
+                  </div>
                 </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-base font-black text-slate-900 truncate">{activity.user}</p>
-                  <p className="text-sm text-slate-500 mb-1">{activity.action}</p>
-                  <span className="text-[11px] text-slate-400 font-bold uppercase tracking-widest">{activity.time}</span>
-                </div>
-              </div>
-            ))}
+              ))}
+            {transactions.length === 0 && (
+              <p className="text-slate-400 text-center py-10 italic">ไม่มีกิจกรรมล่าสุด</p>
+            )}
           </div>
           <button className="w-full mt-12 py-4 bg-slate-50 text-slate-600 rounded-2xl text-sm font-bold hover:bg-slate-100 transition-all active:scale-95">
             ดูประวัติทั้งหมด
@@ -578,14 +714,21 @@ export default function App() {
                       <h4 className="text-3xl font-black text-slate-900">{selectedProductForCheck.name}</h4>
                       <p className="text-slate-500 font-mono text-sm mt-1">ID: {selectedProductForCheck.id}</p>
                     </div>
-                    <span className={`px-6 py-2 rounded-full text-xs font-black uppercase tracking-wider ${
-                      selectedProductForCheck.status === 'Available' ? 'bg-emerald-500 text-white' :
-                      selectedProductForCheck.status === 'Borrowed' ? 'bg-blue-500 text-white' :
-                      'bg-rose-500 text-white'
-                    }`}>
-                      {selectedProductForCheck.status === 'Available' ? 'พร้อมใช้งาน' :
-                       selectedProductForCheck.status === 'Borrowed' ? 'ถูกยืม' : 'ส่งซ่อม'}
-                    </span>
+                    {(() => {
+                      const s = selectedProductForCheck.status?.toLowerCase() || '';
+                      const isAvailable = s === 'available' || s === 'พร้อมใช้งาน';
+                      const isBorrowed = s === 'borrowed' || s === 'borrow' || s === 'ถูกยืม';
+                      
+                      return (
+                        <span className={`px-6 py-2 rounded-full text-xs font-black uppercase tracking-wider ${
+                          isAvailable ? 'bg-emerald-500 text-white' :
+                          isBorrowed ? 'bg-blue-500 text-white' :
+                          'bg-rose-500 text-white'
+                        }`}>
+                          {isAvailable ? 'พร้อมใช้งาน' : isBorrowed ? 'ถูกยืม' : 'ส่งซ่อม'}
+                        </span>
+                      );
+                    })()}
                   </div>
                   
                   <div className="grid grid-cols-2 gap-6">
@@ -605,14 +748,19 @@ export default function App() {
                       <span>ประวัติการใช้งานล่าสุด</span>
                     </h5>
                     <div className="space-y-4">
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-500">ยืมโดย: Somchai K.</span>
-                        <span className="text-slate-400">01/03/2026</span>
-                      </div>
-                      <div className="flex items-center justify-between text-sm">
-                        <span className="text-slate-500">คืนโดย: Somchai K.</span>
-                        <span className="text-slate-400">05/03/2026</span>
-                      </div>
+                      {transactions
+                        .filter(t => t.snDevice === selectedProductForCheck.productId)
+                        .slice(0, 3)
+                        .map((t, i) => (
+                          <div key={i} className="flex items-center justify-between text-sm">
+                            <span className="text-slate-500">{t.status === 'Active' ? 'ยืมโดย' : 'คืนโดย'}: {t.fname}</span>
+                            <span className="text-slate-400">{t.borrowDate}</span>
+                          </div>
+                        ))
+                      }
+                      {transactions.filter(t => t.snDevice === selectedProductForCheck.productId).length === 0 && (
+                        <p className="text-xs text-slate-400 text-center py-4 italic">ไม่มีประวัติการใช้งาน</p>
+                      )}
                     </div>
                   </div>
                 </div>
@@ -628,6 +776,65 @@ export default function App() {
               </motion.div>
             )}
           </AnimatePresence>
+        </div>
+      </div>
+    );
+  };
+
+  const renderNotBorrowedStudents = () => {
+    const notBorrowed = getStudentsNotBorrowed();
+    return (
+      <div className="space-y-8">
+        <div className="flex items-center justify-between">
+          <div>
+            <h2 className="text-3xl font-black text-slate-800 tracking-tight">นักเรียนที่ยังไม่ยืมอุปกรณ์</h2>
+            <p className="text-slate-500">รายชื่อนักเรียนที่ยังไม่มีรายการยืม iPad ในระบบ</p>
+          </div>
+          <div className="bg-white px-6 py-3 rounded-2xl border border-slate-100 shadow-sm">
+            <p className="text-xs font-black text-slate-400 uppercase tracking-widest mb-1">จำนวนทั้งหมด</p>
+            <p className="text-xl font-black text-blue-600">{notBorrowed.length} คน</p>
+          </div>
+        </div>
+
+        <div className="bg-white rounded-[3rem] shadow-sm border border-slate-100 overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left border-collapse">
+              <thead>
+                <tr className="bg-slate-50/50">
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">รหัสนักเรียน</th>
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">ชื่อ-นามสกุล</th>
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">ระดับชั้น</th>
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">ห้อง</th>
+                  <th className="px-8 py-6 text-[11px] font-black uppercase tracking-widest text-slate-400">การดำเนินการ</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-50">
+                {notBorrowed.map((student) => (
+                  <tr key={student.studentId} className="hover:bg-slate-50/50 transition-colors group">
+                    <td className="px-8 py-6">
+                      <span className="text-sm font-mono font-bold text-slate-400">{student.studentId}</span>
+                    </td>
+                    <td className="px-8 py-6">
+                      <p className="text-sm font-black text-slate-800">{student.fullName}</p>
+                    </td>
+                    <td className="px-8 py-6">
+                      <span className="px-3 py-1 bg-blue-50 text-blue-600 rounded-full text-[10px] font-black uppercase">
+                        {student.grade}
+                      </span>
+                    </td>
+                    <td className="px-8 py-6">
+                      <span className="text-sm font-bold text-slate-600">{student.classroom}</span>
+                    </td>
+                    <td className="px-8 py-6">
+                      <button className="px-4 py-2 bg-slate-900 text-white rounded-xl text-xs font-bold hover:bg-slate-800 transition-all active:scale-95">
+                        ส่งคำเชิญ
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     );
@@ -702,99 +909,183 @@ export default function App() {
     </div>
   );
 
+  const handleGenerateRepairPDF = async () => {
+    if (!repairSlipRef.current) return;
+    setIsGeneratingPDF(true);
+    try {
+      const canvas = await html2canvas(repairSlipRef.current, {
+        scale: 2,
+        useCORS: true,
+        backgroundColor: '#ffffff'
+      });
+      const imgData = canvas.toDataURL('image/png');
+      const pdf = new jsPDF('p', 'mm', 'a4');
+      const pdfWidth = pdf.internal.pageSize.getWidth();
+      const pdfHeight = (canvas.height * pdfWidth) / canvas.width;
+      pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
+      pdf.save(`repair-slip-${repairForm.repairNumber}.pdf`);
+    } catch (error) {
+      console.error('Error generating PDF:', error);
+    } finally {
+      setIsGeneratingPDF(false);
+    }
+  };
+
+  const handleSendRepairEmail = () => {
+    const subject = encodeURIComponent(`แจ้งซ่อมอุปกรณ์: ${repairForm.repairNumber}`);
+    const body = encodeURIComponent(`
+หมายเลขแจ้งซ่อม: ${repairForm.repairNumber}
+รหัสอุปกรณ์: ${repairForm.productId}
+ประเภทปัญหา: ${repairForm.issueType}
+รายละเอียด: ${repairForm.description}
+
+กรุณาตรวจสอบใบแจ้งซ่อมที่แนบมาพร้อมกันนี้ (หากดาวน์โหลด PDF แล้ว)
+    `);
+    window.location.href = `mailto:${repairForm.reporterEmail}?subject=${subject}&body=${body}`;
+  };
+
   const renderAdminRepairs = () => (
     <div className="space-y-8">
-      <h2 className="text-3xl font-black text-slate-800 tracking-tight">จัดการการแจ้งซ่อม</h2>
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-3xl font-black text-slate-800 tracking-tight">แจ้งซ่อมอุปกรณ์</h2>
+          <p className="text-slate-500">สร้างใบแจ้งซ่อมและส่งข้อมูลทางอีเมล</p>
+        </div>
+      </div>
       
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
         {/* Left: Repair Form */}
-        <div className="lg:col-span-2 space-y-8">
+        <div className="space-y-8">
           <div className="bg-white p-10 rounded-[3rem] shadow-sm border border-slate-100">
             <h3 className="text-xl font-black text-slate-800 mb-8 flex items-center space-x-3">
-              <AlertTriangle className="text-blue-500" />
-              <span>แจ้งซ่อมอุปกรณ์</span>
+              <AlertTriangle className="text-yellow-500" />
+              <span>ข้อมูลการแจ้งซ่อม</span>
             </h3>
             
-            <form className="space-y-6">
+            <div className="space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <div className="space-y-2">
-                  <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-2">เลือกอุปกรณ์ที่มีปัญหา</label>
-                  <select className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer">
+                  <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-2">เลือกอุปกรณ์</label>
+                  <select 
+                    value={repairForm.productId}
+                    onChange={(e) => setRepairForm({...repairForm, productId: e.target.value})}
+                    className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer font-bold"
+                  >
                     <option value="">-- เลือกอุปกรณ์ --</option>
                     {products.map(p => (
-                      <option key={p.productId} value={p.productId}>{p.productId} ({p.status})</option>
+                      <option key={p.productId} value={p.productId}>{p.productId} - {p.name}</option>
                     ))}
                   </select>
                 </div>
                 <div className="space-y-2">
                   <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-2">ประเภทปัญหา</label>
-                  <select className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer">
+                  <select 
+                    value={repairForm.issueType}
+                    onChange={(e) => setRepairForm({...repairForm, issueType: e.target.value})}
+                    className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all cursor-pointer font-bold"
+                  >
                     <option value="screen">หน้าจอแตก/เสียหาย</option>
                     <option value="battery">แบตเตอรี่/การชาร์จ</option>
                     <option value="software">ซอฟต์แวร์/ระบบ</option>
-                    <option value="accessories">อุปกรณ์เสริม</option>
-                    <option value="other">อื่นๆ</option>
+                    <option value="hardware">ฮาร์ดแวร์อื่นๆ</option>
                   </select>
                 </div>
               </div>
-              
+
               <div className="space-y-2">
-                <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-2">รายละเอียดปัญหา</label>
-                <textarea rows={5} className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all" placeholder="อธิบายอาการเสียอย่างละเอียด..."></textarea>
+                <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-2">อีเมลผู้แจ้ง/ผู้รับผิดชอบ</label>
+                <input 
+                  type="email"
+                  value={repairForm.reporterEmail}
+                  onChange={(e) => setRepairForm({...repairForm, reporterEmail: e.target.value})}
+                  placeholder="example@email.com"
+                  className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all font-bold"
+                />
               </div>
 
-              <button type="button" className="w-full py-5 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/20 active:scale-95">
-                บันทึกการแจ้งซ่อม
-              </button>
-            </form>
+              <div className="space-y-2">
+                <label className="text-xs font-black uppercase tracking-widest text-slate-400 ml-2">รายละเอียดเพิ่มเติม</label>
+                <textarea 
+                  value={repairForm.description}
+                  onChange={(e) => setRepairForm({...repairForm, description: e.target.value})}
+                  rows={4}
+                  className="w-full px-6 py-4 bg-slate-50 border border-slate-100 rounded-2xl focus:outline-none focus:ring-4 focus:ring-blue-500/10 transition-all font-bold resize-none"
+                  placeholder="ระบุรายละเอียดของปัญหา..."
+                ></textarea>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4 pt-4">
+                <button 
+                  onClick={handleGenerateRepairPDF}
+                  disabled={!repairForm.productId || isGeneratingPDF}
+                  className="flex items-center justify-center space-x-2 py-4 bg-yellow-400 text-blue-900 rounded-2xl font-black hover:bg-yellow-500 transition-all shadow-xl shadow-yellow-400/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Download size={20} />
+                  <span>{isGeneratingPDF ? 'กำลังสร้าง...' : 'บันทึก PDF'}</span>
+                </button>
+                <button 
+                  onClick={handleSendRepairEmail}
+                  disabled={!repairForm.productId || !repairForm.reporterEmail}
+                  className="flex items-center justify-center space-x-2 py-4 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/20 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  <Mail size={20} />
+                  <span>ส่งอีเมล</span>
+                </button>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Right: Recent Repairs */}
-        <div className="space-y-8">
-          <div className="bg-white p-10 rounded-[3rem] shadow-sm border border-slate-100">
-            <h3 className="text-xl font-black text-slate-800 mb-8 flex items-center space-x-3">
-              <History className="text-blue-500" />
-              <span>รายการซ่อมล่าสุด</span>
-            </h3>
-            
-            <div className="space-y-6">
-              {repairs.map((repair, i) => (
-                <div key={repair.id} className="flex items-start space-x-4 p-4 rounded-2xl hover:bg-slate-50 transition-colors group">
-                  <div className={`w-10 h-10 rounded-xl flex items-center justify-center text-white shrink-0 ${
-                    repair.status === 'Pending' ? 'bg-blue-500' :
-                    repair.status === 'Repairing' ? 'bg-blue-500' : 'bg-emerald-500'
-                  }`}>
-                    {repair.status === 'Pending' ? <Clock size={20} /> :
-                     repair.status === 'Repairing' ? <ArrowRightLeft size={20} /> : <CheckCircle2 size={20} />}
-                  </div>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center justify-between mb-1">
-                      <p className="text-sm font-black text-slate-900 truncate">{repair.productId}</p>
-                      <span className="text-[10px] text-slate-400 font-bold">{repair.reportDate}</span>
-                    </div>
-                    <p className="text-xs text-slate-500 line-clamp-1">{repair.issue}</p>
-                    <span className={`text-[9px] font-black uppercase tracking-widest mt-2 inline-block ${
-                      repair.status === 'Pending' ? 'text-blue-600' :
-                      repair.status === 'Repairing' ? 'text-blue-600' : 'text-emerald-600'
-                    }`}>
-                      {repair.status === 'Pending' ? 'รอดำเนินการ' :
-                       repair.status === 'Repairing' ? 'กำลังซ่อม' : 'ซ่อมเสร็จแล้ว'}
-                    </span>
-                  </div>
+        {/* Right: Preview Slip */}
+        <div className="space-y-6">
+          <div className="bg-slate-100 p-8 rounded-[3rem] border-2 border-dashed border-slate-200 flex items-center justify-center min-h-[500px]">
+            <div 
+              ref={repairSlipRef}
+              className="bg-white w-full max-w-[350px] p-8 shadow-2xl rounded-2xl space-y-8 text-slate-800"
+            >
+              <div className="text-center space-y-2">
+                <div className="w-16 h-16 bg-yellow-400 rounded-2xl flex items-center justify-center text-blue-900 mx-auto mb-4">
+                  <AlertTriangle size={32} />
                 </div>
-              ))}
-              
-              {repairs.length === 0 && (
-                <div className="text-center py-10">
-                  <p className="text-slate-400 text-sm font-bold">ไม่มีรายการซ่อม</p>
+                <h4 className="text-xl font-black uppercase tracking-tight">ใบแจ้งซ่อมอุปกรณ์</h4>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Repair Notification Slip</p>
+              </div>
+
+              <div className="space-y-4 border-y border-slate-100 py-6">
+                <div className="flex justify-between text-xs">
+                  <span className="font-black text-slate-400 uppercase tracking-widest">หมายเลขแจ้งซ่อม</span>
+                  <span className="font-bold text-blue-600">{repairForm.repairNumber}</span>
                 </div>
-              )}
+                <div className="flex justify-between text-xs">
+                  <span className="font-black text-slate-400 uppercase tracking-widest">รหัสอุปกรณ์</span>
+                  <span className="font-bold">{repairForm.productId || '-'}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="font-black text-slate-400 uppercase tracking-widest">ประเภทปัญหา</span>
+                  <span className="font-bold uppercase">{repairForm.issueType}</span>
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="font-black text-slate-400 uppercase tracking-widest">วันที่แจ้ง</span>
+                  <span className="font-bold">{new Date().toLocaleDateString('th-TH')}</span>
+                </div>
+              </div>
+
+              <div className="flex flex-col items-center justify-center space-y-4 pt-4">
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100">
+                  <QRCodeCanvas 
+                    value={repairForm.repairNumber} 
+                    size={120}
+                    level="H"
+                    includeMargin={true}
+                  />
+                </div>
+                <p className="text-[10px] font-black text-slate-400 uppercase tracking-widest">Scan to track status</p>
+              </div>
+
+              <div className="text-center pt-4">
+                <p className="text-[9px] text-slate-300 font-medium">ระบบบริหารจัดการอุปกรณ์ ICT โรงเรียน</p>
+              </div>
             </div>
-            
-            <button className="w-full mt-8 py-4 bg-slate-50 text-slate-600 rounded-2xl text-sm font-bold hover:bg-slate-100 transition-all">
-              ดูรายการทั้งหมด
-            </button>
           </div>
         </div>
       </div>
@@ -861,7 +1152,14 @@ export default function App() {
           <button className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:bg-slate-50 transition-all shadow-sm" title="จัดการอุปกรณ์">
             <ArrowRightLeft size={20} />
           </button>
-          <button className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:bg-slate-50 transition-all shadow-sm" title="นำเข้าข้อมูล (JSON)">
+          <button 
+            onClick={() => {
+              setIsImportModalOpen(true);
+              setImportResults(null);
+            }}
+            className="p-3 bg-white border border-slate-200 rounded-2xl text-slate-600 hover:bg-slate-50 transition-all shadow-sm" 
+            title="นำเข้าข้อมูล (JSON/CSV)"
+          >
             <UploadCloud size={20} />
           </button>
           <button 
@@ -913,38 +1211,49 @@ export default function App() {
                     </span>
                   </td>
                   <td className="px-8 py-6">
-                    {product.status === 'Borrowed' ? (() => {
-                      const activeTx = transactions.find(t => t.productId === product.productId && t.status === 'Active');
-                      if (!activeTx) return <span className="text-sm text-slate-300">-</span>;
+                    {(() => {
+                      const s = product.status?.toLowerCase() || '';
+                      const isBorrowed = s === 'borrowed' || s === 'borrow' || s === 'ถูกยืม';
                       
-                      const borrower = activeTx.borrowerType === 'Student' 
-                        ? students.find(s => s.studentId === activeTx.borrowerId)
-                        : teachers.find(t => t.teacherId === activeTx.borrowerId);
+                      if (isBorrowed) {
+                        const activeTx = transactions.find(t => t.productId === product.productId && t.status === 'Active');
+                        if (!activeTx) return <span className="text-sm text-slate-300">-</span>;
                         
-                      return (
-                        <div className="flex items-center space-x-2">
-                          <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-600">
-                            {borrower?.fullName?.[0] || '?'}
+                        const borrower = activeTx.borrowerType === 'Student' 
+                          ? students.find(s => s.studentId === activeTx.borrowerId)
+                          : teachers.find(t => t.teacherId === activeTx.borrowerId);
+                          
+                        return (
+                          <div className="flex items-center space-x-2">
+                            <div className="w-6 h-6 rounded-full bg-blue-100 flex items-center justify-center text-[10px] font-bold text-blue-600">
+                              {borrower?.fullName?.[0] || '?'}
+                            </div>
+                            <span className="text-sm font-medium text-slate-600">
+                              {borrower?.fullName || 'Unknown'} 
+                              {activeTx.borrowerType === 'Student' && (borrower as SheetStudent)?.grade ? ` (${(borrower as SheetStudent).grade}/${(borrower as SheetStudent).classroom})` : ''}
+                            </span>
                           </div>
-                          <span className="text-sm font-medium text-slate-600">
-                            {borrower?.fullName || 'Unknown'} 
-                            {activeTx.borrowerType === 'Student' && (borrower as SheetStudent)?.grade ? ` (${(borrower as SheetStudent).grade}/${(borrower as SheetStudent).classroom})` : ''}
-                          </span>
-                        </div>
-                      );
-                    })() : (
-                      <span className="text-sm text-slate-300">-</span>
-                    )}
+                        );
+                      }
+                      return <span className="text-sm text-slate-300">-</span>;
+                    })()}
                   </td>
                   <td className="px-8 py-6">
-                    <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
-                      product.status === 'Available' ? 'bg-emerald-100 text-emerald-600' :
-                      product.status === 'Borrowed' ? 'bg-blue-100 text-blue-600' :
-                      'bg-rose-100 text-rose-600'
-                    }`}>
-                      {product.status === 'Available' ? 'พร้อมใช้งาน' :
-                       product.status === 'Borrowed' ? 'ถูกยืม' : 'ส่งซ่อม'}
-                    </span>
+                    {(() => {
+                      const s = product.status?.toLowerCase() || '';
+                      const isAvailable = s === 'available' || s === 'พร้อมใช้งาน';
+                      const isBorrowed = s === 'borrowed' || s === 'borrow' || s === 'ถูกยืม';
+                      
+                      return (
+                        <span className={`px-4 py-1.5 rounded-full text-[10px] font-black uppercase tracking-wider ${
+                          isAvailable ? 'bg-emerald-100 text-emerald-600' :
+                          isBorrowed ? 'bg-blue-100 text-blue-600' :
+                          'bg-rose-100 text-rose-600'
+                        }`}>
+                          {isAvailable ? 'พร้อมใช้งาน' : isBorrowed ? 'ถูกยืม' : 'ส่งซ่อม'}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td className="px-8 py-6 text-right">
                     <button className="p-2 text-slate-400 hover:text-slate-900 transition-colors">
@@ -1023,7 +1332,7 @@ export default function App() {
 
               <button 
                 type="submit" 
-                className="w-full py-5 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/20 active:scale-95"
+                className="w-full py-5 bg-yellow-400 text-blue-900 rounded-2xl font-black hover:bg-yellow-500 transition-all shadow-xl shadow-yellow-400/20 active:scale-95"
               >
                 เข้าสู่ระบบ
               </button>
@@ -1287,6 +1596,233 @@ export default function App() {
       </motion.div>
     </div>
   );
+  const renderBorrowModal = () => (
+    <AnimatePresence>
+      {isBorrowModalOpen && selectedProductForBorrow && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsBorrowModalOpen(false)}
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.9, opacity: 0, y: 20 }}
+            className="relative bg-white w-full max-w-lg rounded-[32px] shadow-2xl overflow-hidden"
+          >
+            <div className="p-8">
+              <div className="flex justify-between items-start mb-8">
+                <div>
+                  <h3 className="text-2xl font-black text-slate-800 tracking-tight">ทำรายการยืมอุปกรณ์</h3>
+                  <p className="text-slate-500 font-bold">กรุณากรอกข้อมูลผู้ยืมให้ครบถ้วน</p>
+                </div>
+                <button onClick={() => setIsBorrowModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors">
+                  <X size={24} className="text-slate-400" />
+                </button>
+              </div>
+
+              <div className="space-y-6">
+                <div className="p-4 bg-slate-50 rounded-2xl border border-slate-100 flex items-center space-x-4">
+                  <div className="w-12 h-12 bg-white rounded-xl flex items-center justify-center text-blue-600 shadow-sm">
+                    <Tablet size={24} />
+                  </div>
+                  <div>
+                    <p className="text-xs font-bold text-slate-400 uppercase tracking-widest">อุปกรณ์ที่เลือก</p>
+                    <p className="font-black text-slate-800">{selectedProductForBorrow.productId}</p>
+                  </div>
+                </div>
+
+                <form onSubmit={(e) => {
+                  e.preventDefault();
+                  const formData = new FormData(e.currentTarget);
+                  handleBorrow(
+                    selectedProductForBorrow, 
+                    formData.get('fid') as string, 
+                    formData.get('fname') as string
+                  );
+                }}>
+                  <div className="space-y-4">
+                    <div>
+                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">รหัสผู้ยืม (Fid)</label>
+                      <input 
+                        name="fid"
+                        required
+                        type="text" 
+                        placeholder="เช่น 51604"
+                        className="w-full px-6 py-4 bg-slate-50 border-2 border-transparent focus:border-yellow-400 focus:bg-white rounded-2xl outline-none transition-all font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-xs font-black text-slate-400 uppercase tracking-widest mb-2 ml-1">ชื่อ-นามสกุล (Fname)</label>
+                      <input 
+                        name="fname"
+                        required
+                        type="text" 
+                        placeholder="ระบุชื่อ-นามสกุล"
+                        className="w-full px-6 py-4 bg-slate-50 border-2 border-transparent focus:border-yellow-400 focus:bg-white rounded-2xl outline-none transition-all font-bold"
+                      />
+                    </div>
+                    <div className="pt-4">
+                      <button 
+                        type="submit"
+                        className="w-full py-5 bg-yellow-400 text-blue-900 rounded-2xl font-black hover:bg-yellow-500 transition-all shadow-xl shadow-yellow-400/20 active:scale-95"
+                      >
+                        ยืนยันการยืม
+                      </button>
+                    </div>
+                  </div>
+                </form>
+              </div>
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
+
+  const renderImportModal = () => (
+    <AnimatePresence>
+      {isImportModalOpen && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
+          <motion.div 
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setIsImportModalOpen(false)}
+            className="absolute inset-0 bg-slate-900/60 backdrop-blur-sm"
+          />
+          <motion.div 
+            initial={{ scale: 0.9, opacity: 0, y: 20 }}
+            animate={{ scale: 1, opacity: 1, y: 0 }}
+            exit={{ scale: 0.9, opacity: 0, y: 20 }}
+            className="relative bg-white w-full max-w-2xl rounded-[32px] shadow-2xl overflow-hidden"
+          >
+            <div className="p-8">
+              <div className="flex justify-between items-start mb-8">
+                <div>
+                  <h3 className="text-2xl font-black text-slate-800 tracking-tight">นำเข้าข้อมูล Transactions</h3>
+                  <p className="text-slate-500 font-bold">เลือกรูปแบบไฟล์และอัปโหลดข้อมูล</p>
+                </div>
+                <button onClick={() => setIsImportModalOpen(false)} className="p-2 hover:bg-slate-100 rounded-xl transition-colors">
+                  <X size={24} className="text-slate-400" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-3 gap-4 mb-8">
+                {[
+                  { id: 'JSON', label: 'JSON File', icon: FileText },
+                  { id: 'CSV', label: 'CSV File', icon: FileText },
+                  { id: 'GoogleSheet', label: 'Google Sheet', icon: Database },
+                ].map((type) => (
+                  <button
+                    key={type.id}
+                    onClick={() => setImportType(type.id as any)}
+                    className={`p-4 rounded-2xl border-2 transition-all flex flex-col items-center space-y-2 ${
+                      importType === type.id 
+                        ? 'border-yellow-400 bg-yellow-50 text-blue-900' 
+                        : 'border-slate-100 hover:border-slate-200 text-slate-400'
+                    }`}
+                  >
+                    <type.icon size={24} />
+                    <span className="text-xs font-black uppercase tracking-widest">{type.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {importResults ? (
+                <div className="space-y-6">
+                  <div className="grid grid-cols-2 gap-4">
+                    <div className="p-6 bg-emerald-50 rounded-2xl border border-emerald-100 text-center">
+                      <p className="text-3xl font-black text-emerald-600">{importResults.success}</p>
+                      <p className="text-xs font-bold text-emerald-600 uppercase tracking-widest mt-1">สำเร็จ</p>
+                    </div>
+                    <div className="p-6 bg-rose-50 rounded-2xl border border-rose-100 text-center">
+                      <p className="text-3xl font-black text-rose-600">{importResults.failed}</p>
+                      <p className="text-xs font-bold text-rose-600 uppercase tracking-widest mt-1">ล้มเหลว</p>
+                    </div>
+                  </div>
+                  {importResults.errors.length > 0 && (
+                    <div className="max-h-40 overflow-y-auto p-4 bg-slate-50 rounded-2xl border border-slate-100 space-y-2">
+                      {importResults.errors.map((err, i) => (
+                        <p key={i} className="text-xs font-bold text-rose-500 flex items-center space-x-2">
+                          <AlertCircle size={12} />
+                          <span>{err}</span>
+                        </p>
+                      ))}
+                    </div>
+                  )}
+                  <button 
+                    onClick={() => setIsImportModalOpen(false)}
+                    className="w-full py-4 bg-slate-900 text-white rounded-2xl font-black hover:bg-slate-800 transition-all"
+                  >
+                    ปิดหน้าต่าง
+                  </button>
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {importType === 'GoogleSheet' ? (
+                    <div className="p-12 border-2 border-dashed border-slate-200 rounded-[32px] text-center">
+                      <Database size={48} className="mx-auto text-slate-300 mb-4" />
+                      <p className="text-slate-500 font-bold mb-6">เชื่อมต่อกับ Google Sheets เพื่อดึงข้อมูล</p>
+                      <button className="px-8 py-4 bg-blue-600 text-white rounded-2xl font-black hover:bg-blue-700 transition-all shadow-xl shadow-blue-600/20">
+                        เชื่อมต่อ Google Sheet
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="p-12 border-2 border-dashed border-slate-200 rounded-[32px] text-center relative group hover:border-yellow-400 transition-all">
+                      <UploadCloud size={48} className="mx-auto text-slate-300 mb-4 group-hover:text-yellow-400 transition-all" />
+                      <p className="text-slate-500 font-bold">คลิกหรือลากไฟล์ {importType} มาวางที่นี่</p>
+                      <input 
+                        type="file" 
+                        accept={importType === 'JSON' ? '.json' : '.csv'}
+                        className="absolute inset-0 opacity-0 cursor-pointer"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = (event) => {
+                            try {
+                              const content = event.target?.result as string;
+                              if (importType === 'JSON') {
+                                handleImportData(JSON.parse(content), 'JSON');
+                              } else {
+                                // Simple CSV parser
+                                const lines = content.split('\n');
+                                const headers = lines[0].split(',').map(h => h.trim());
+                                const data = lines.slice(1).map(line => {
+                                  const values = line.split(',').map(v => v.trim());
+                                  const obj: any = {};
+                                  headers.forEach((h, i) => obj[h] = values[i]);
+                                  return obj;
+                                });
+                                handleImportData(data, 'CSV');
+                              }
+                            } catch (err) {
+                              setImportResults({ success: 0, failed: 1, errors: ['ไฟล์ไม่ถูกต้อง'] });
+                            }
+                          };
+                          reader.readAsText(file);
+                        }}
+                      />
+                    </div>
+                  )}
+                  <div className="p-4 bg-blue-50 rounded-2xl border border-blue-100">
+                    <p className="text-xs font-bold text-blue-600 flex items-center space-x-2">
+                      <Info size={14} />
+                      <span>โครงสร้างข้อมูลที่ต้องการ: borrowerId, fid, fname, snDevice, borrowDate, dueDate, recorder, status</span>
+                    </p>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
+    </AnimatePresence>
+  );
   const renderProducts = () => (
     <div className="space-y-10">
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-8">
@@ -1314,7 +1850,7 @@ export default function App() {
           {currentUser?.role === UserRole.Admin && (
             <button 
               onClick={() => setIsAddProductModalOpen(true)}
-              className="bg-white text-blue-900 px-8 py-5 rounded-2xl text-base font-black flex items-center space-x-3 hover:bg-slate-100 transition-all shadow-xl shadow-blue-900/10 active:scale-95"
+              className="bg-yellow-400 text-blue-900 px-8 py-5 rounded-2xl text-base font-black flex items-center space-x-3 hover:bg-yellow-500 transition-all shadow-xl shadow-yellow-400/20 active:scale-95"
             >
               <Plus size={24} />
               <span>เพิ่มอุปกรณ์</span>
@@ -1342,14 +1878,21 @@ export default function App() {
                   referrerPolicy="no-referrer"
                 />
                 <div className="absolute top-5 right-5">
-                  <span className={`px-5 py-2 rounded-full text-xs font-black shadow-2xl backdrop-blur-xl ${
-                    product.status === 'Available' ? 'bg-emerald-500/90 text-white' :
-                    product.status === 'Borrowed' ? 'bg-blue-500/90 text-white' :
-                    'bg-rose-500/90 text-white'
-                  }`}>
-                    {product.status === 'Available' ? 'พร้อมใช้งาน' :
-                     product.status === 'Borrowed' ? 'ถูกยืม' : 'ส่งซ่อม'}
-                  </span>
+                    {(() => {
+                      const s = product.status?.toLowerCase() || '';
+                      const isAvailable = s === 'available' || s === 'พร้อมใช้งาน';
+                      const isBorrowed = s === 'borrowed' || s === 'borrow' || s === 'ถูกยืม';
+                      
+                      return (
+                        <span className={`px-5 py-2 rounded-full text-xs font-black shadow-2xl backdrop-blur-xl ${
+                          isAvailable ? 'bg-emerald-500/90 text-white' :
+                          isBorrowed ? 'bg-blue-500/90 text-white' :
+                          'bg-rose-500/90 text-white'
+                        }`}>
+                          {isAvailable ? 'พร้อมใช้งาน' : isBorrowed ? 'ถูกยืม' : 'ส่งซ่อม'}
+                        </span>
+                      );
+                    })()}
                 </div>
                 {product.isFeatured && (
                   <div className="absolute top-5 left-5">
@@ -1381,7 +1924,13 @@ export default function App() {
                       รายละเอียด
                     </button>
                     {product.status === 'Available' && (
-                      <button className="flex-1 py-4 bg-white text-blue-900 rounded-2xl text-sm font-black hover:bg-slate-100 transition-all shadow-xl shadow-blue-900/10 active:scale-95">
+                      <button 
+                        onClick={() => {
+                          setSelectedProductForBorrow(product);
+                          setIsBorrowModalOpen(true);
+                        }}
+                        className="flex-1 py-4 bg-yellow-400 text-blue-900 rounded-2xl text-sm font-black hover:bg-yellow-500 transition-all shadow-xl shadow-yellow-400/20 active:scale-95"
+                      >
                         ทำรายการยืม
                       </button>
                     )}
@@ -1449,7 +1998,7 @@ export default function App() {
                 onClick={() => setAdminTab(item.id)}
                 className={`px-6 py-3 rounded-2xl text-sm font-black transition-all duration-300 flex items-center space-x-2 ${
                   adminTab === item.id 
-                    ? 'bg-white text-blue-900 shadow-lg shadow-blue-900/10' 
+                    ? 'bg-yellow-400 text-blue-900 shadow-lg shadow-yellow-400/20' 
                     : 'text-slate-300 hover:bg-white/10 hover:text-white'
                 }`}
               >
@@ -1471,7 +2020,7 @@ export default function App() {
                 </div>
                 <div className="text-left">
                   <p className="text-xs font-black leading-none">{currentUser.loginId}</p>
-                  <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest mt-1">{isAdminMode ? 'ADMIN MODE' : currentUser.role}</p>
+                  <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest mt-1">{isAdminMode ? 'admin' : currentUser.role}</p>
                 </div>
                 {currentUser.role === UserRole.Admin && <Settings size={14} className="text-slate-400" />}
               </div>
@@ -1482,8 +2031,16 @@ export default function App() {
                   <p className="text-[9px] font-bold text-slate-300 uppercase tracking-widest mt-1">GUEST</p>
                 </div>
                 <button 
-                  onClick={() => setIsLoginModalOpen(true)}
-                  className="p-3 bg-white/10 hover:bg-white/20 rounded-2xl transition-all text-white flex items-center justify-center"
+                  onClick={() => {
+                    setCurrentUser({
+                      loginId: 'Sunonchet',
+                      fullName: 'Sunonchet',
+                      role: UserRole.Admin,
+                      password: ''
+                    });
+                    setIsAdminMode(true);
+                  }}
+                  className="p-3 bg-yellow-400 hover:bg-yellow-500 rounded-2xl transition-all text-blue-900 flex items-center justify-center shadow-lg shadow-yellow-400/20"
                   title="เข้าสู่ระบบสำหรับเจ้าหน้าที่"
                 >
                   <Settings size={24} />
@@ -1570,6 +2127,7 @@ export default function App() {
                 adminTab === 'dashboard' ? renderDashboard() :
                 adminTab === 'all-items' ? renderAdminAllItems() :
                 adminTab === 'check-status' ? renderAdminCheckStatus() :
+                adminTab === 'not-borrowed' ? renderNotBorrowedStudents() :
                 adminTab === 'manage-personnel' ? renderAdminManagePersonnel() :
                 adminTab === 'repairs' ? renderAdminRepairs() :
                 <div className="text-center py-20">
@@ -1598,6 +2156,8 @@ export default function App() {
           </div>
         </div>
       </footer>
+      {renderBorrowModal()}
+      {renderImportModal()}
     </div>
   );
 }

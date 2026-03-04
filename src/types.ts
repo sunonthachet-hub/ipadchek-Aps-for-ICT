@@ -45,13 +45,15 @@ export interface SheetProduct {
 }
 
 export interface SheetTransaction {
-  id: string;
-  productId: string;
-  borrowerId: string; // studentId or teacherId
-  borrowerType: 'Student' | 'Teacher';
+  borrowerId: string; // Auto-generated Transaction ID
+  fid: string;        // Student or Teacher ID
+  fname: string;      // Full name
+  snDevice: string;   // Serial Number of device
   borrowDate: string;
+  borrowTime: string; // Timestamp (HH:mm:ss)
   dueDate: string;
   returnDate?: string;
+  recorder: string;   // Staff name
   status: 'Active' | 'Returned' | 'Overdue';
 }
 
