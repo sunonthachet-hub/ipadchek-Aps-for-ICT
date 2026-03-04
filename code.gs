@@ -6,11 +6,21 @@
 const SPREADSHEET_ID = SpreadsheetApp.getActiveSpreadsheet().getId();
 
 function doGet(e) {
-  const action = e.parameter.action;
+  const action = e.parameter.action || 'getAllData';
   const ss = SpreadsheetApp.openById(SPREADSHEET_ID);
   
   try {
     switch (action) {
+      case 'getAllData':
+        return jsonResponse({
+          Products: getProductsData(ss),
+          Categories: getSheetData(ss, 'Categories'),
+          Students: getSheetData(ss, 'Students'),
+          Teachers: getSheetData(ss, 'Teachers'),
+          Maintenance: getSheetData(ss, 'Maintenance'),
+          Transactions: getSheetData(ss, 'Transactions'),
+          Users: getSheetData(ss, 'Users')
+        });
       case 'getProducts':
         return jsonResponse(getProductsData(ss));
       case 'getCategories':
@@ -23,7 +33,7 @@ function doGet(e) {
           teachers: getSheetData(ss, 'Teachers')
         });
       default:
-        return jsonResponse({ error: 'Invalid action' });
+        return jsonResponse({ error: 'Invalid action: ' + action });
     }
   } catch (err) {
     return jsonResponse({ error: err.toString() });
@@ -51,6 +61,23 @@ function doPost(e) {
 }
 
 // --- Helper Functions ---
+
+function handleReportIssue(ss, data) {
+  const sheet = ss.getSheetByName('Maintenance');
+  if (!sheet) return { error: 'Maintenance sheet not found' };
+  
+  sheet.appendRow([
+    data.repairNumber || ('REP-' + new Date().getTime()),
+    data.productId,
+    data.issueType,
+    data.description,
+    data.reporterEmail,
+    new Date().toLocaleDateString('th-TH'),
+    'Pending'
+  ]);
+  
+  return { success: true };
+}
 
 function jsonResponse(data) {
   return ContentService.createTextOutput(JSON.stringify(data))

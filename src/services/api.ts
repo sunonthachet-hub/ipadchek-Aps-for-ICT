@@ -5,18 +5,23 @@
 
 import { SheetTransaction } from '../types';
 
-const API_URL = (import.meta as any).env.VITE_API_URL;
+const API_URL = import.meta.env.VITE_API_URL;
 
 export const apiService = {
   async getProducts() {
-    if (!API_URL) return null;
-    const response = await fetch(`${API_URL}?action=getProducts`);
+    if (!API_URL) {
+      console.warn('VITE_API_URL is not set. Using mock data.');
+      return null;
+    }
+    const url = API_URL.includes('?') ? `${API_URL}&action=getProducts` : `${API_URL}?action=getProducts`;
+    const response = await fetch(url);
     return response.json();
   },
 
   async getStats() {
     if (!API_URL) return null;
-    const response = await fetch(`${API_URL}?action=getStats`);
+    const url = API_URL.includes('?') ? `${API_URL}&action=getStats` : `${API_URL}?action=getStats`;
+    const response = await fetch(url);
     return response.json();
   },
 

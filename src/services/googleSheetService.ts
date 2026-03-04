@@ -7,15 +7,19 @@ const SCRIPT_URL = import.meta.env.VITE_API_URL || '';
 export const googleSheetService = {
   async getAllData(): Promise<any> {
     if (!SCRIPT_URL) {
-      console.warn('Google Apps Script URL not set.');
+      console.warn('VITE_API_URL is not set. Using mock data.');
       return null;
     }
+    const url = SCRIPT_URL.includes('?') ? `${SCRIPT_URL}&action=getAllData` : `${SCRIPT_URL}?action=getAllData`;
     try {
-      const response = await fetch(SCRIPT_URL);
-      if (!response.ok) throw new Error('Network response was not ok');
-      return await response.json();
+      console.log('Fetching all data from Google Sheets...');
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`Network response was not ok: ${response.statusText}`);
+      const data = await response.json();
+      console.log('Successfully fetched data from Google Sheets.');
+      return data;
     } catch (error) {
-      console.error('Error fetching all data:', error);
+      console.error('Error fetching all data from Google Sheets:', error);
       return null;
     }
   },

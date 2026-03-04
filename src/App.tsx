@@ -107,6 +107,7 @@ export default function App() {
   const [transactions, setTransactions] = useState<SheetTransaction[]>([]);
   const [users, setUsers] = useState<SheetUser[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isApiConfigured, setIsApiConfigured] = useState(!!import.meta.env.VITE_API_URL);
 
   // Auth State
   const [currentUser, setCurrentUser] = useState<SheetUser | null>(null);
@@ -129,10 +130,15 @@ export default function App() {
   // Fetch Data on Mount
   useEffect(() => {
     const loadAllData = async () => {
+      if (!import.meta.env.VITE_API_URL) {
+        setIsLoading(false);
+        setIsApiConfigured(false);
+        return;
+      }
       setIsLoading(true);
       try {
         const data = await googleSheetService.getAllData();
-        if (data) {
+        if (data && !data.error) {
           setProducts(data.Products || []);
           setCategories(data.Categories || []);
           setStudents(data.Students || []);
@@ -140,6 +146,10 @@ export default function App() {
           setRepairs(data.Maintenance || []);
           setTransactions(data.Transactions || []);
           setUsers(data.Users || []);
+          setIsApiConfigured(true);
+        } else {
+          console.warn('API returned error or no data, using local state/mock data.');
+          if (data?.error) console.error('API Error:', data.error);
         }
       } catch (error) {
         console.error('Error loading data:', error);
@@ -2048,6 +2058,18 @@ export default function App() {
 
           {/* User & Actions */}
           <div className="flex items-center space-x-6">
+            {!isApiConfigured && (
+              <div className="hidden md:flex items-center space-x-2 px-4 py-2 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
+                <AlertTriangle size={14} />
+                <span className="text-[10px] font-black uppercase tracking-widest">Demo Mode</span>
+              </div>
+            )}
+            {isApiConfigured && (
+              <div className="hidden md:flex items-center space-x-2 px-4 py-2 bg-emerald-500/10 text-emerald-400 rounded-xl border border-emerald-500/20">
+                <Database size={14} />
+                <span className="text-[10px] font-black uppercase tracking-widest">Live</span>
+              </div>
+            )}
             {currentUser ? (
               <div 
                 className="hidden md:flex items-center space-x-3 bg-white/10 px-4 py-2 rounded-2xl border border-white/10 cursor-pointer hover:bg-white/20 transition-all"
